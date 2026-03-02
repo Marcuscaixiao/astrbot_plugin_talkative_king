@@ -1,0 +1,5 @@
+name: astrbot_plugin_talkative_king
+version: 1.2.0
+author: User
+desc: 统计群组发言并生成排行榜
+repo: https://github.com/AstrBot-Devs/astrbot_plugin_talkative_king

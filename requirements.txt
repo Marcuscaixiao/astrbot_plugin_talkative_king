@@ -1,0 +1,4 @@
+Pillow
+aiohttp
+pilmoji==2.0.4
+emoji==2.2.0

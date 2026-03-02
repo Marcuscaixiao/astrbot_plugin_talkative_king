@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv/
+
+# AstrBot Data
+data/
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Test artifacts
+test_*.png
+test_output/
