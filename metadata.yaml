@@ -1,5 +1,5 @@
 name: astrbot_plugin_talkative_king
 version: 1.2.0
 author: User
-desc: 统计群组发言并生成排行榜
-repo: https://github.com/AstrBot-Devs/astrbot_plugin_talkative_king
+desc: 统计群组发言并生成精美的排行榜图片，内置 pilmoji 支持，完美渲染 Emoji 和颜文字，支持自定义背景。
+repo: https://github.com/Marcuscaixiao/astrbot_plugin_talkative_king
