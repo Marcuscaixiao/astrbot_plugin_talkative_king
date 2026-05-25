@@ -538,6 +538,21 @@ class TalkativeKing(Star):
         output_dir = os.path.join(os.getcwd(), "data", "talkative_king_images")
         if not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
+        else:
+            # Clear old cached images (older than 5 minutes)
+            try:
+                current_time = datetime.datetime.now().timestamp()
+                for filename in os.listdir(output_dir):
+                    file_path = os.path.join(output_dir, filename)
+                    if os.path.isfile(file_path):
+                        if current_time - os.path.getmtime(file_path) > 300:
+                            try:
+                                os.remove(file_path)
+                            except Exception:
+                                pass
+            except Exception as e:
+                logger.warning(f"Failed to clear cached images: {e}")
+
         output_path = os.path.join(output_dir, f"rank_{int(datetime.datetime.now().timestamp())}.png")
         img.save(output_path)
         return output_path
