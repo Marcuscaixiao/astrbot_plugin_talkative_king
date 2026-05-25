@@ -553,8 +553,12 @@ class TalkativeKing(Star):
             except Exception as e:
                 logger.warning(f"Failed to clear cached images: {e}")
 
-        output_path = os.path.join(output_dir, f"rank_{int(datetime.datetime.now().timestamp())}.png")
-        img.save(output_path)
+        # 使用 JPEG 格式并压缩质量，大幅减小体积，避免框架上传超时
+        output_path = os.path.join(output_dir, f"rank_{int(datetime.datetime.now().timestamp())}.jpg")
+        img.convert('RGB').save(output_path, format='JPEG', quality=85)
+        
+        # 转换为绝对路径并替换反斜杠为正斜杠，增强 NapCat 等框架在 Windows 下的路径兼容性
+        output_path = os.path.abspath(output_path).replace('\\', '/')
         return output_path
 
     @filter.command("今日壁画王", alias={"今日发言排行榜", "今日发言", "今日排行"})
