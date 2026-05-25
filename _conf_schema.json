@@ -1,8 +1,15 @@
 {
     "custom_bg": {
         "type": "file",
-        "description": "自定义背景图。上传一张图片作为榜单背景，留空则使用默认背景图。支持 jpg/png 格式。",
+        "description": "自定义背景图上传。",
+        "hint": "需要 AstrBot v4.13.0 及以上版本才支持文件上传。上传后会优先使用这张图作为榜单背景。",
         "default": [],
-        "file_types": ["jpg", "jpeg", "png"]
+        "file_types": ["jpg", "jpeg", "png", "webp"]
+    },
+    "custom_bg_path": {
+        "type": "string",
+        "description": "自定义背景图路径（兼容旧版 AstrBot）",
+        "hint": "如果你的 AstrBot 面板不支持文件上传，请在这里填写本地图片绝对路径，例如 C:/AstrBot/data/bg.jpg",
+        "default": ""
     }
 }

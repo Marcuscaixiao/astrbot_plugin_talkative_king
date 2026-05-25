@@ -18,7 +18,7 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 
-@register("talkative_king", "User", "统计群组发言并生成排行榜", "1.3.1", "")
+@register("talkative_king", "User", "统计群组发言并生成排行榜", "1.3.2", "")
 class TalkativeKing(Star):
     ZAKO_PHRASES = [
         "杂鱼~杂鱼~",
@@ -328,21 +328,29 @@ class TalkativeKing(Star):
         asset_bg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "background.jpg")
         bg_path = asset_bg_path
         
-        # 用户上传自定义背景图逻辑
-        if isinstance(self.config, dict) and "custom_bg" in self.config:
+        # 优先使用面板上传文件；旧版 AstrBot 不支持 file 配置时，回退到手填本地路径
+        if isinstance(self.config, dict):
+            custom_path = ""
             custom_bg_list = self.config.get("custom_bg", [])
             if isinstance(custom_bg_list, list) and len(custom_bg_list) > 0:
-                custom_path = custom_bg_list[0]
-                if isinstance(custom_path, str) and os.path.exists(custom_path):
-                    bg_path = custom_path
-                    # 按照用户要求，如果存在自定义背景，尝试删除自带的默认背景以节省空间（如果需要的话）
-                    # 考虑到框架更新可能会恢复这个文件，我们只是优先使用用户上传的
-                    if os.path.exists(asset_bg_path):
-                        try:
-                            os.remove(asset_bg_path)
-                            logger.info("已检测到自定义背景，删除了默认的 background.jpg")
-                        except Exception:
-                            pass
+                first_item = custom_bg_list[0]
+                if isinstance(first_item, str):
+                    custom_path = first_item
+
+            if not custom_path:
+                fallback_path = self.config.get("custom_bg_path", "")
+                if isinstance(fallback_path, str):
+                    custom_path = fallback_path.strip()
+
+            if custom_path and os.path.exists(custom_path):
+                bg_path = custom_path
+                # 用户已设置自定义背景时，删除插件自带默认背景，后续都走用户配置
+                if os.path.exists(asset_bg_path):
+                    try:
+                        os.remove(asset_bg_path)
+                        logger.info("已检测到自定义背景，删除了默认的 background.jpg")
+                    except Exception:
+                        pass
         
         if os.path.exists(bg_path):
             try:
