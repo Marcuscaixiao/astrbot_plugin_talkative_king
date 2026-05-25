@@ -1,0 +1,8 @@
+{
+    "custom_bg": {
+        "type": "file",
+        "description": "自定义背景图。上传一张图片作为榜单背景，留空则使用默认背景图。支持 jpg/png 格式。",
+        "default": [],
+        "file_types": ["jpg", "jpeg", "png"]
+    }
+}

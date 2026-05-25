@@ -17,17 +17,8 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
-from pydantic import BaseModel, Field
 
-class TalkativeKingConfig(BaseModel):
-    custom_bg: list[str] = Field(
-        default=[],
-        title="自定义背景图",
-        description="上传一张图片作为自定义背景图，留空则使用默认背景图。支持 jpg/png 格式。",
-        json_schema_extra={"type": "file", "file_types": ["jpg", "jpeg", "png"]}
-    )
-
-@register("talkative_king", "User", "统计群组发言并生成排行榜", "1.3.0", "")
+@register("talkative_king", "User", "统计群组发言并生成排行榜", "1.3.1", "")
 class TalkativeKing(Star):
     ZAKO_PHRASES = [
         "杂鱼~杂鱼~",
@@ -62,7 +53,7 @@ class TalkativeKing(Star):
                     pass
         return fonts
 
-    def __init__(self, context: Context, config: TalkativeKingConfig):
+    def __init__(self, context: Context, config: dict):
         super().__init__(context)
         self.config = config
         self.data_path = os.path.join(os.getcwd(), "data", "talkative_king.json")
@@ -338,11 +329,11 @@ class TalkativeKing(Star):
         bg_path = asset_bg_path
         
         # 用户上传自定义背景图逻辑
-        if hasattr(self, 'config') and getattr(self.config, 'custom_bg', None):
-            custom_bg_list = self.config.custom_bg
+        if isinstance(self.config, dict) and "custom_bg" in self.config:
+            custom_bg_list = self.config.get("custom_bg", [])
             if isinstance(custom_bg_list, list) and len(custom_bg_list) > 0:
                 custom_path = custom_bg_list[0]
-                if os.path.exists(custom_path):
+                if isinstance(custom_path, str) and os.path.exists(custom_path):
                     bg_path = custom_path
                     # 按照用户要求，如果存在自定义背景，尝试删除自带的默认背景以节省空间（如果需要的话）
                     # 考虑到框架更新可能会恢复这个文件，我们只是优先使用用户上传的
