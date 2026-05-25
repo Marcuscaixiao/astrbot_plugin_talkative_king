@@ -18,7 +18,7 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 
-@register("talkative_king", "User", "统计群组发言并生成排行榜", "1.2.0", "")
+@register("talkative_king", "User", "统计群组发言并生成排行榜", "1.2.1", "")
 class TalkativeKing(Star):
     ZAKO_PHRASES = [
         "杂鱼~杂鱼~",
