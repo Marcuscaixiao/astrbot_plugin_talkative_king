@@ -21,7 +21,7 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.api import logger
 
-@register("talkative_king", "User", "统计群组发言并生成排行榜", "1.3.3", "")
+@register("talkative_king", "User", "统计群组发言并生成排行榜", "1.3.4", "")
 class TalkativeKing(Star):
     ZAKO_PHRASES = [
         "杂鱼~杂鱼~",
@@ -59,11 +59,41 @@ class TalkativeKing(Star):
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
         self.config = config
+        self.plugin_root_name = "astrbot_plugin_talkative_king"
         self.data_dir = Path(StarTools.get_data_dir("astrbot_plugin_talkative_king"))
         self.data_path = os.path.join(os.getcwd(), "data", "talkative_king.json")
         self.data = self.load_data()
 
+    def _load_runtime_config(self):
+        candidate_names = [
+            f"{self.plugin_root_name}_config.json",
+            "talkative_king_config.json",
+        ]
+        config_dir = Path(os.getcwd()) / "data" / "config"
+
+        for filename in candidate_names:
+            config_path = config_dir / filename
+            if not config_path.is_file():
+                continue
+
+            try:
+                with config_path.open("r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    return loaded
+            except Exception as e:
+                logger.warning(f"Failed to load runtime config from {config_path}: {e}")
+
+        return self.config if isinstance(self.config, dict) else {}
+
     def _resolve_config_file_path(self, value):
+        if isinstance(value, dict):
+            for key in ("path", "value", "file_path", "file"):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    value = candidate
+                    break
+
         if not isinstance(value, str):
             return None
 
@@ -80,14 +110,22 @@ class TalkativeKing(Star):
         if not parts or any(part in {".", ".."} for part in parts):
             return None
 
-        target = (self.data_dir / "/".join(parts)).resolve(strict=False)
-        try:
-            target.relative_to(self.data_dir.resolve(strict=False))
-        except ValueError:
-            return None
+        candidate_roots = [
+            self.data_dir,
+            Path(os.getcwd()) / "data",
+            Path(os.getcwd()),
+        ]
 
-        if target.is_file():
-            return str(target)
+        for root in candidate_roots:
+            target = (root / "/".join(parts)).resolve(strict=False)
+            try:
+                target.relative_to(root.resolve(strict=False))
+            except ValueError:
+                continue
+
+            if target.is_file():
+                return str(target)
+
         return None
 
     def _get_background_path(self):
@@ -97,17 +135,19 @@ class TalkativeKing(Star):
             "background.jpg",
         )
 
-        if not isinstance(self.config, dict):
+        effective_config = self._load_runtime_config()
+        if not isinstance(effective_config, dict):
             return asset_bg_path
 
-        custom_bg_list = self.config.get("custom_bg", [])
+        custom_bg_list = effective_config.get("custom_bg", [])
         if isinstance(custom_bg_list, list):
-            for item in custom_bg_list:
+            # WebUI 的 file 配置是追加式上传，最新上传的背景应优先生效。
+            for item in reversed(custom_bg_list):
                 resolved = self._resolve_config_file_path(item)
                 if resolved:
                     return resolved
 
-        fallback_path = self.config.get("custom_bg_path", "")
+        fallback_path = effective_config.get("custom_bg_path", "")
         resolved_fallback = self._resolve_config_file_path(fallback_path)
         if resolved_fallback:
             return resolved_fallback
