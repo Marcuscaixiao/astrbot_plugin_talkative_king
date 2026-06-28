@@ -17,7 +17,7 @@ try:
 except ImportError:
     HAS_PILMOJI = False
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps
-from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.api import logger
 
@@ -63,6 +63,14 @@ class TalkativeKing(Star):
         self.data_dir = Path(StarTools.get_data_dir("astrbot_plugin_talkative_king"))
         self.data_path = os.path.join(os.getcwd(), "data", "talkative_king.json")
         self.data = self.load_data()
+        # 定时自动发送相关状态
+        # 后台任务对象（asyncio.Task）
+        self._auto_send_task = None
+        # 标记后台任务是否已启动，避免重复启动
+        self._auto_send_started = False
+        # 记录每个群今天是否已自动发送过，key 为 group_id，value 为日期字符串
+        # 防止同一分钟内重复发送 / loop 多次触发
+        self._auto_send_last_sent = {}
 
     def _load_runtime_config(self):
         candidate_names = [
@@ -217,6 +225,9 @@ class TalkativeKing(Star):
                         data["groups"] = {}
                     if "date" not in data:
                         data["date"] = self.get_current_date().isoformat()
+                    # umo_map: group_id -> unified_msg_origin，用于定时主动推送
+                    if "umo_map" not in data or not isinstance(data["umo_map"], dict):
+                        data["umo_map"] = {}
                     
                     # Sanitize keys: Convert all Group IDs to strings
                     # This fixes the issue where some groups might have been stored as integers
@@ -238,7 +249,7 @@ class TalkativeKing(Star):
                     return data
             except Exception as e:
                 logger.error(f"Failed to load data: {e}")
-        return {"date": self.get_current_date().isoformat(), "groups": {}}
+        return {"date": self.get_current_date().isoformat(), "groups": {}, "umo_map": {}}
 
     async def save_data(self):
         try:
@@ -317,6 +328,9 @@ class TalkativeKing(Star):
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent):
+        # 懒启动定时自动发送后台任务（确保 event loop 已运行）
+        self._ensure_auto_send_task()
+
         # 1. Trigger Check (Priority)
         msg = event.message_str or ""
         
@@ -362,9 +376,18 @@ class TalkativeKing(Star):
             group_id = str(event.get_group_id()) # Ensure string
             user_id = event.get_sender_id()
             user_name = event.get_sender_name()
-            
+
             if not group_id or not user_id:
                 return
+
+            # 记录该群的 unified_msg_origin，供定时主动推送使用
+            try:
+                umo = event.unified_msg_origin
+                if umo and self.data.get("umo_map", {}).get(group_id) != umo:
+                    self.data.setdefault("umo_map", {})[group_id] = umo
+                    await self.save_data()
+            except Exception as e:
+                logger.warning(f"Failed to record unified_msg_origin: {e}")
 
             # Fallback for empty name
             if not user_name:
@@ -697,6 +720,22 @@ class TalkativeKing(Star):
             await event.send(event.plain_result("请在群聊中使用此指令。"))
             return
 
+        # Render Image
+        try:
+            image_path = await self._render_leaderboard_image(group_id, which)
+            if image_path and os.path.exists(image_path):
+                await event.send(event.image_result(image_path))
+            else:
+                await event.send(event.plain_result("生成图片失败: 未能获取图片路径"))
+        except Exception as e:
+            logger.error(f"Render failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            await event.send(event.plain_result(f"生成图片失败: {e}"))
+
+    async def _render_leaderboard_image(self, group_id, which="today"):
+        """根据 group_id 与 which(today/yesterday) 生成排行榜图片，返回图片路径或 None。
+        该方法不依赖 event，手动指令与定时自动发送共用。"""
         if which == "today":
             target_data = self.data["groups"]
             date_str = self.data.get("date", "未知日期")
@@ -714,7 +753,7 @@ class TalkativeKing(Star):
 
         # Even if no data, we proceed to render the "Zako" image
         group_data = target_data.get(group_id, {})
-        
+
         # Sort users
         sorted_users = sorted(group_data.items(), key=lambda x: x[1]["count"], reverse=True)
         top_users = sorted_users[:20]
@@ -735,18 +774,114 @@ class TalkativeKing(Star):
             "users": render_users
         }
 
-        # Render Image
+        image_path = await self.render_pil_image(render_data)
+        return image_path
+
+    # ===================== 定时自动发送 =====================
+
+    def _ensure_auto_send_task(self):
+        """懒启动定时自动发送后台任务，保证仅在 event loop 运行后创建。"""
+        if self._auto_send_started:
+            return
         try:
-            image_path = await self.render_pil_image(render_data)
-            if image_path and os.path.exists(image_path):
-                await event.send(event.image_result(image_path))
-            else:
-                await event.send(event.plain_result("生成图片失败: 未能获取图片路径"))
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # 当前没有运行中的 loop，跳过（下次消息到来再尝试）
+            return
+        self._auto_send_started = True
+        self._auto_send_task = loop.create_task(self._auto_send_loop())
+        logger.info("TalkativeKing 定时自动发送后台任务已启动。")
+
+    async def _auto_send_loop(self):
+        """后台循环：每分钟检查一次是否到达设定发送时间，到达则向目标群主动推送今日壁画王。"""
+        while True:
+            try:
+                await asyncio.sleep(60)
+                await self._auto_send_tick()
+            except asyncio.CancelledError:
+                # 插件卸载时被取消，正常退出
+                break
+            except Exception as e:
+                logger.error(f"Auto send loop error: {e}")
+
+    async def _auto_send_tick(self):
+        cfg = self._load_runtime_config()
+        if not isinstance(cfg, dict):
+            return
+        # 未启用则直接返回
+        if not cfg.get("auto_send_enabled", False):
+            return
+
+        # 解析发送时间 HH:MM（北京时间）
+        time_str = str(cfg.get("auto_send_time", "08:00")).strip()
+        try:
+            hour_str, minute_str = time_str.split(":")
+            target_hour = int(hour_str)
+            target_minute = int(minute_str)
+            if not (0 <= target_hour <= 23 and 0 <= target_minute <= 59):
+                raise ValueError
+        except Exception:
+            logger.warning(f"自动发送时间格式非法: {time_str}，应为 HH:MM")
+            return
+
+        # 当前北京时间
+        utc_now = datetime.datetime.utcnow()
+        beijing_now = utc_now + datetime.timedelta(hours=8)
+        today_str = beijing_now.date().isoformat()
+
+        # 未到点则跳过
+        if not (beijing_now.hour == target_hour and beijing_now.minute == target_minute):
+            return
+
+        # 目标群号列表
+        # 一键广播：开启后向所有已记录过消息的群发送，无需填写群号列表
+        umo_map = self.data.get("umo_map", {})
+        if cfg.get("auto_send_all_groups", False):
+            # 遍历所有已记录的群（umo_map 的 key 即为 group_id）
+            group_ids = [str(gid) for gid in umo_map.keys() if str(gid).strip()]
+            logger.info(f"一键广播模式：将向 {len(group_ids)} 个群发送今日壁画王。")
+        else:
+            raw_groups = cfg.get("auto_send_groups", [])
+            if not isinstance(raw_groups, list) or not raw_groups:
+                return
+            group_ids = [str(raw_gid).strip() for raw_gid in raw_groups if str(raw_gid).strip()]
+
+        for group_id in group_ids:
+            if not group_id:
+                continue
+            # 当天已发送过则跳过，避免同一分钟重复触发
+            if self._auto_send_last_sent.get(group_id) == today_str:
+                continue
+            umo = umo_map.get(group_id)
+            if not umo:
+                logger.warning(f"自动发送跳过群 {group_id}：尚未记录该群的会话标识(umo)，请确保机器人已在群内接收过消息。")
+                continue
+            await self._send_auto_leaderboard(group_id, umo, today_str)
+
+    async def _send_auto_leaderboard(self, group_id, umo, today_str):
+        """向指定群主动推送今日壁画王图片。"""
+        try:
+            # 发送前确保数据已按日期重置
+            await self.check_reset()
+            image_path = await self._render_leaderboard_image(group_id, "today")
+            if not image_path or not os.path.exists(image_path):
+                logger.warning(f"自动发送群 {group_id}：生成图片失败。")
+                return
+            chain = MessageChain().file_image(image_path)
+            await self.context.send_message(umo, chain)
+            # 标记当天已发送
+            self._auto_send_last_sent[group_id] = today_str
+            logger.info(f"已自动向群 {group_id} 发送今日壁画王。")
         except Exception as e:
-            logger.error(f"Render failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            await event.send(event.plain_result(f"生成图片失败: {e}"))
+            logger.error(f"自动向群 {group_id} 发送今日壁画王失败: {e}")
 
     async def terminate(self):
+        # 取消定时自动发送后台任务
+        if self._auto_send_task is not None and not self._auto_send_task.done():
+            self._auto_send_task.cancel()
+            try:
+                await self._auto_send_task
+            except Exception:
+                pass
+        self._auto_send_started = False
         await self.save_data()

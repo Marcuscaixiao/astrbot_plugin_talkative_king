@@ -11,5 +11,29 @@
         "description": "自定义背景图路径（兼容旧版 AstrBot）",
         "hint": "如果你的 AstrBot 面板不支持文件上传，请在这里填写本地图片绝对路径，例如 C:/AstrBot/data/bg.jpg",
         "default": ""
+    },
+    "auto_send_enabled": {
+        "type": "bool",
+        "description": "启用定时自动发送今日壁画王",
+        "hint": "开启后，机器人会在每天设定的时间自动向目标群发送今日发言排行榜图片。与手动指令互不干扰。",
+        "default": false
+    },
+    "auto_send_time": {
+        "type": "string",
+        "description": "定时发送时间（24小时制）",
+        "hint": "格式为 HH:MM，例如 08:00 表示每天早上8点发送，23:30 表示晚上11点30分发送。时间以北京时间(UTC+8)为准。",
+        "default": "08:00"
+    },
+    "auto_send_all_groups": {
+        "type": "bool",
+        "description": "一键广播：向所有群发送",
+        "hint": "开启后，无需填写下方群号列表，机器人会自动向所有已记录过消息的群聊广播今日壁画王。关闭则只发送给下方指定的群号列表。",
+        "default": false
+    },
+    "auto_send_groups": {
+        "type": "list",
+        "description": "定时发送目标群号列表（仅在“一键广播”关闭时生效）",
+        "hint": "填写需要定时发送今日壁画王的群号。每个群号单独一行。注意：机器人需已加入该群并至少接收过一次群消息，才能主动推送。",
+        "default": []
     }
 }
