@@ -8,6 +8,9 @@ import random
 import tempfile
 import shutil
 import re
+import time
+import uuid
+from pathlib import Path
 try:
     from pilmoji import Pilmoji
     HAS_PILMOJI = True
@@ -15,10 +18,10 @@ except ImportError:
     HAS_PILMOJI = False
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.api import logger
 
-@register("talkative_king", "User", "统计群组发言并生成排行榜", "1.3.2", "")
+@register("talkative_king", "User", "统计群组发言并生成排行榜", "1.3.3", "")
 class TalkativeKing(Star):
     ZAKO_PHRASES = [
         "杂鱼~杂鱼~",
@@ -56,8 +59,101 @@ class TalkativeKing(Star):
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
         self.config = config
+        self.data_dir = Path(StarTools.get_data_dir("astrbot_plugin_talkative_king"))
         self.data_path = os.path.join(os.getcwd(), "data", "talkative_king.json")
         self.data = self.load_data()
+
+    def _resolve_config_file_path(self, value):
+        if not isinstance(value, str):
+            return None
+
+        raw_path = value.strip()
+        if not raw_path:
+            return None
+
+        direct_path = Path(raw_path).expanduser()
+        if direct_path.is_file():
+            return str(direct_path)
+
+        rel = raw_path.replace("\\", "/").lstrip("/")
+        parts = [part for part in rel.split("/") if part]
+        if not parts or any(part in {".", ".."} for part in parts):
+            return None
+
+        target = (self.data_dir / "/".join(parts)).resolve(strict=False)
+        try:
+            target.relative_to(self.data_dir.resolve(strict=False))
+        except ValueError:
+            return None
+
+        if target.is_file():
+            return str(target)
+        return None
+
+    def _get_background_path(self):
+        asset_bg_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "assets",
+            "background.jpg",
+        )
+
+        if not isinstance(self.config, dict):
+            return asset_bg_path
+
+        custom_bg_list = self.config.get("custom_bg", [])
+        if isinstance(custom_bg_list, list):
+            for item in custom_bg_list:
+                resolved = self._resolve_config_file_path(item)
+                if resolved:
+                    return resolved
+
+        fallback_path = self.config.get("custom_bg_path", "")
+        resolved_fallback = self._resolve_config_file_path(fallback_path)
+        if resolved_fallback:
+            return resolved_fallback
+
+        return asset_bg_path
+
+    def _cleanup_render_cache(self, output_dir, max_age_seconds=300, max_files=20):
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            now = time.time()
+            cache_files = []
+
+            for filename in os.listdir(output_dir):
+                file_path = os.path.join(output_dir, filename)
+                if not os.path.isfile(file_path):
+                    continue
+
+                lowered = filename.lower()
+                if not lowered.endswith((".jpg", ".jpeg", ".png", ".webp")):
+                    continue
+
+                try:
+                    mtime = os.path.getmtime(file_path)
+                except OSError:
+                    continue
+
+                # 先清理超时缓存，避免长期堆积
+                if now - mtime > max_age_seconds:
+                    try:
+                        os.remove(file_path)
+                    except OSError:
+                        pass
+                    continue
+
+                cache_files.append((mtime, file_path))
+
+            # 即使短时间内大量生成，也限制缓存总数
+            if len(cache_files) > max_files:
+                cache_files.sort(key=lambda item: item[0])
+                for _, file_path in cache_files[:-max_files]:
+                    try:
+                        os.remove(file_path)
+                    except OSError:
+                        pass
+        except Exception as e:
+            logger.warning(f"Failed to clear cached images: {e}")
 
     def get_current_date(self):
         # Enforce UTC+8 (Beijing Time) for consistency
@@ -325,32 +421,7 @@ class TalkativeKing(Star):
             
         # Create image
         # Try to load background
-        asset_bg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "background.jpg")
-        bg_path = asset_bg_path
-        
-        # 优先使用面板上传文件；旧版 AstrBot 不支持 file 配置时，回退到手填本地路径
-        if isinstance(self.config, dict):
-            custom_path = ""
-            custom_bg_list = self.config.get("custom_bg", [])
-            if isinstance(custom_bg_list, list) and len(custom_bg_list) > 0:
-                first_item = custom_bg_list[0]
-                if isinstance(first_item, str):
-                    custom_path = first_item
-
-            if not custom_path:
-                fallback_path = self.config.get("custom_bg_path", "")
-                if isinstance(fallback_path, str):
-                    custom_path = fallback_path.strip()
-
-            if custom_path and os.path.exists(custom_path):
-                bg_path = custom_path
-                # 用户已设置自定义背景时，删除插件自带默认背景，后续都走用户配置
-                if os.path.exists(asset_bg_path):
-                    try:
-                        os.remove(asset_bg_path)
-                        logger.info("已检测到自定义背景，删除了默认的 background.jpg")
-                    except Exception:
-                        pass
+        bg_path = self._get_background_path()
         
         if os.path.exists(bg_path):
             try:
@@ -560,25 +631,10 @@ class TalkativeKing(Star):
 
         # Save
         output_dir = os.path.join(os.getcwd(), "data", "talkative_king_images")
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir, exist_ok=True)
-        else:
-            # Clear old cached images (older than 5 minutes)
-            try:
-                current_time = datetime.datetime.now().timestamp()
-                for filename in os.listdir(output_dir):
-                    file_path = os.path.join(output_dir, filename)
-                    if os.path.isfile(file_path):
-                        if current_time - os.path.getmtime(file_path) > 300:
-                            try:
-                                os.remove(file_path)
-                            except Exception:
-                                pass
-            except Exception as e:
-                logger.warning(f"Failed to clear cached images: {e}")
+        self._cleanup_render_cache(output_dir)
 
         # 使用 JPEG 格式并压缩质量，大幅减小体积，避免框架上传超时
-        output_path = os.path.join(output_dir, f"rank_{int(datetime.datetime.now().timestamp())}.jpg")
+        output_path = os.path.join(output_dir, f"rank_{uuid.uuid4().hex}.jpg")
         img.convert('RGB').save(output_path, format='JPEG', quality=85)
         
         # 转换为绝对路径并替换反斜杠为正斜杠，增强 NapCat 等框架在 Windows 下的路径兼容性
