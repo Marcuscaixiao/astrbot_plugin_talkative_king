@@ -19,8 +19,9 @@ from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.api import logger
 
-@register("talkative_king", "User", "统计群组发言并生成排行榜", "1.4.0", "")
+@register("talkative_king", "User", "统计群组发言并生成排行榜", "1.4.1", "")
 class TalkativeKing(Star):
+    ALLOWED_DATA_KEYS = {"date", "groups", "yesterday", "umo_map"}
     ZAKO_PHRASES = [
         "杂鱼~杂鱼~",
         "不会吧不会吧，今天只有这点人说话？",
@@ -69,6 +70,10 @@ class TalkativeKing(Star):
         # 记录每个群今天是否已自动发送过，key 为 group_id，value 为日期字符串
         # 防止同一分钟内重复发送 / loop 多次触发
         self._auto_send_last_sent = {}
+        # 每日凌晨数据清理相关状态
+        self._cleanup_task = None
+        self._cleanup_started = False
+        self._cleanup_last_run = None
         self._cleanup_legacy_render_dir()
 
     def _cleanup_legacy_render_dir(self):
@@ -176,6 +181,48 @@ class TalkativeKing(Star):
         utc_now = datetime.datetime.utcnow()
         beijing_now = utc_now + datetime.timedelta(hours=8)
         return beijing_now.date()
+
+    def _prune_expired_stats(self, data):
+        """只保留今日、昨日两层统计数据，其他历史统计一律清除。"""
+        if not isinstance(data, dict):
+            data = {}
+
+        pruned = {key: data[key] for key in self.ALLOWED_DATA_KEYS if key in data}
+
+        if not isinstance(pruned.get("groups"), dict):
+            pruned["groups"] = {}
+        else:
+            pruned["groups"] = {str(k): v for k, v in pruned["groups"].items()}
+
+        if not isinstance(pruned.get("umo_map"), dict):
+            pruned["umo_map"] = {}
+        else:
+            pruned["umo_map"] = {str(k): v for k, v in pruned["umo_map"].items()}
+
+        today = self.get_current_date()
+        today_str = today.isoformat()
+        yesterday_str = (today - datetime.timedelta(days=1)).isoformat()
+
+        date_str = pruned.get("date")
+        if not isinstance(date_str, str):
+            pruned["date"] = today_str
+
+        yesterday = pruned.get("yesterday")
+        if not isinstance(yesterday, dict):
+            pruned["yesterday"] = {}
+        else:
+            y_date = yesterday.get("date")
+            y_groups = yesterday.get("groups", {})
+            if y_date == yesterday_str and isinstance(y_groups, dict):
+                pruned["yesterday"] = {
+                    "date": y_date,
+                    "groups": {str(k): v for k, v in y_groups.items()},
+                }
+            else:
+                # 只要不是“真正的昨日数据”，就直接清掉，避免 json 累积旧统计。
+                pruned["yesterday"] = {}
+
+        return pruned
         
     def load_data(self):
         if not os.path.exists(os.path.dirname(self.data_path)):
@@ -188,36 +235,10 @@ class TalkativeKing(Star):
             try:
                 with open(self.data_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    # Ensure basic structure
-                    if "groups" not in data:
-                        data["groups"] = {}
-                    if "date" not in data:
-                        data["date"] = self.get_current_date().isoformat()
-                    # umo_map: group_id -> unified_msg_origin，用于定时主动推送
-                    if "umo_map" not in data or not isinstance(data["umo_map"], dict):
-                        data["umo_map"] = {}
-                    
-                    # Sanitize keys: Convert all Group IDs to strings
-                    # This fixes the issue where some groups might have been stored as integers
-                    # and thus are not accessible via string lookup.
-                    if "groups" in data and isinstance(data["groups"], dict):
-                        new_groups = {}
-                        for k, v in data["groups"].items():
-                            new_groups[str(k)] = v
-                        data["groups"] = new_groups
-
-                    if "yesterday" in data and isinstance(data["yesterday"], dict):
-                        y_groups = data["yesterday"].get("groups", {})
-                        if isinstance(y_groups, dict):
-                            new_y_groups = {}
-                            for k, v in y_groups.items():
-                                new_y_groups[str(k)] = v
-                            data["yesterday"]["groups"] = new_y_groups
-                    
-                    return data
+                    return self._prune_expired_stats(data)
             except Exception as e:
                 logger.error(f"Failed to load data: {e}")
-        return {"date": self.get_current_date().isoformat(), "groups": {}, "umo_map": {}}
+        return self._prune_expired_stats({"date": self.get_current_date().isoformat(), "groups": {}, "umo_map": {}})
 
     async def save_data(self):
         try:
@@ -229,6 +250,7 @@ class TalkativeKing(Star):
     def _save_data_sync(self):
         try:
             os.makedirs(os.path.dirname(self.data_path), exist_ok=True)
+            self.data = self._prune_expired_stats(self.data)
             # Atomic write using temp file
             dir_path = os.path.dirname(self.data_path)
             with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=dir_path, delete=False) as tf:
@@ -292,12 +314,14 @@ class TalkativeKing(Star):
             # Reset today
             self.data["date"] = today_str
             self.data["groups"] = {}
+            self.data = self._prune_expired_stats(self.data)
             await self.save_data()
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent):
-        # 懒启动定时自动发送后台任务（确保 event loop 已运行）
+        # 懒启动后台任务（确保 event loop 已运行）
         self._ensure_auto_send_task()
+        self._ensure_cleanup_task()
 
         # 1. Trigger Check (Priority)
         msg = event.message_str or ""
@@ -751,6 +775,51 @@ class TalkativeKing(Star):
         image_path = await self.render_pil_image(render_data)
         return image_path
 
+    # ===================== 每日数据清理 =====================
+
+    def _ensure_cleanup_task(self):
+        """懒启动每日数据清理后台任务，保证仅在 event loop 运行后创建。"""
+        if self._cleanup_started:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._cleanup_started = True
+        self._cleanup_task = loop.create_task(self._cleanup_loop())
+
+    async def _cleanup_loop(self):
+        """后台循环：每日北京时间 03:00 检查并清理过期统计数据（仅保留当日和昨日）。"""
+        while True:
+            try:
+                await asyncio.sleep(60)
+                await self._cleanup_tick()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass
+
+    async def _cleanup_tick(self):
+        """单次清理检查：到达清理时间且当天未执行过时触发清理。"""
+        utc_now = datetime.datetime.utcnow()
+        beijing_now = utc_now + datetime.timedelta(hours=8)
+        today_str = beijing_now.date().isoformat()
+
+        # 仅在北京时间 03:00 执行（避开 00:00 数据重置高峰）
+        if not (beijing_now.hour == 3 and beijing_now.minute == 0):
+            return
+
+        if self._cleanup_last_run == today_str:
+            return
+
+        self._cleanup_last_run = today_str
+        try:
+            # 静默执行清理：复用现有的 _prune_expired_stats，仅保留当日和昨日数据
+            self.data = self._prune_expired_stats(self.data)
+            await self.save_data()
+        except Exception:
+            pass
+
     # ===================== 定时自动发送 =====================
 
     def _ensure_auto_send_task(self):
@@ -865,4 +934,12 @@ class TalkativeKing(Star):
             except Exception:
                 pass
         self._auto_send_started = False
+        # 取消每日数据清理后台任务
+        if self._cleanup_task is not None and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except Exception:
+                pass
+        self._cleanup_started = False
         await self.save_data()
