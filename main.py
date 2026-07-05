@@ -75,6 +75,7 @@ class TalkativeKing(Star):
         self._cleanup_started = False
         self._cleanup_last_run = None
         self._cleanup_legacy_render_dir()
+        self._cleanup_temp_images()
 
     def _cleanup_legacy_render_dir(self):
         legacy_dir = os.path.join(os.getcwd(), "data", "talkative_king_images")
@@ -85,6 +86,24 @@ class TalkativeKing(Star):
             logger.info("已清理旧版排行榜图片缓存目录。")
         except Exception as e:
             logger.warning(f"Failed to remove legacy leaderboard image cache dir: {e}")
+
+    def _cleanup_temp_images(self):
+        """启动时清理系统临时目录中可能残留的排行榜图片。"""
+        try:
+            tmp_dir = tempfile.gettempdir()
+            count = 0
+            for filename in os.listdir(tmp_dir):
+                if filename.startswith("tmp") and filename.endswith(".jpg"):
+                    file_path = os.path.join(tmp_dir, filename)
+                    try:
+                        os.remove(file_path)
+                        count += 1
+                    except Exception:
+                        pass
+            if count > 0:
+                logger.info(f"已清理 {count} 个临时图片文件。")
+        except Exception:
+            pass
 
     def _load_runtime_config(self):
         candidate_names = [
