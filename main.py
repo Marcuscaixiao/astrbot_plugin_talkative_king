@@ -8,8 +8,6 @@ import random
 import tempfile
 import shutil
 import re
-import time
-import uuid
 from pathlib import Path
 try:
     from pilmoji import Pilmoji
@@ -21,7 +19,7 @@ from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.api import logger
 
-@register("talkative_king", "User", "统计群组发言并生成排行榜", "1.3.4", "")
+@register("talkative_king", "User", "统计群组发言并生成排行榜", "1.4.0", "")
 class TalkativeKing(Star):
     ZAKO_PHRASES = [
         "杂鱼~杂鱼~",
@@ -71,6 +69,17 @@ class TalkativeKing(Star):
         # 记录每个群今天是否已自动发送过，key 为 group_id，value 为日期字符串
         # 防止同一分钟内重复发送 / loop 多次触发
         self._auto_send_last_sent = {}
+        self._cleanup_legacy_render_dir()
+
+    def _cleanup_legacy_render_dir(self):
+        legacy_dir = os.path.join(os.getcwd(), "data", "talkative_king_images")
+        if not os.path.isdir(legacy_dir):
+            return
+        try:
+            shutil.rmtree(legacy_dir)
+            logger.info("已清理旧版排行榜图片缓存目录。")
+        except Exception as e:
+            logger.warning(f"Failed to remove legacy leaderboard image cache dir: {e}")
 
     def _load_runtime_config(self):
         candidate_names = [
@@ -161,47 +170,6 @@ class TalkativeKing(Star):
             return resolved_fallback
 
         return asset_bg_path
-
-    def _cleanup_render_cache(self, output_dir, max_age_seconds=300, max_files=20):
-        try:
-            os.makedirs(output_dir, exist_ok=True)
-            now = time.time()
-            cache_files = []
-
-            for filename in os.listdir(output_dir):
-                file_path = os.path.join(output_dir, filename)
-                if not os.path.isfile(file_path):
-                    continue
-
-                lowered = filename.lower()
-                if not lowered.endswith((".jpg", ".jpeg", ".png", ".webp")):
-                    continue
-
-                try:
-                    mtime = os.path.getmtime(file_path)
-                except OSError:
-                    continue
-
-                # 先清理超时缓存，避免长期堆积
-                if now - mtime > max_age_seconds:
-                    try:
-                        os.remove(file_path)
-                    except OSError:
-                        pass
-                    continue
-
-                cache_files.append((mtime, file_path))
-
-            # 即使短时间内大量生成，也限制缓存总数
-            if len(cache_files) > max_files:
-                cache_files.sort(key=lambda item: item[0])
-                for _, file_path in cache_files[:-max_files]:
-                    try:
-                        os.remove(file_path)
-                    except OSError:
-                        pass
-        except Exception as e:
-            logger.warning(f"Failed to clear cached images: {e}")
 
     def get_current_date(self):
         # Enforce UTC+8 (Beijing Time) for consistency
@@ -692,12 +660,11 @@ class TalkativeKing(Star):
         img = Image.alpha_composite(img, overlay)
 
 
-        # Save
-        output_dir = os.path.join(os.getcwd(), "data", "talkative_king_images")
-        self._cleanup_render_cache(output_dir)
+        # 写入系统临时文件，发送完成后立即删除，不在插件数据目录保留任何排行榜图片
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_file:
+            output_path = tmp_file.name
 
         # 使用 JPEG 格式并压缩质量，大幅减小体积，避免框架上传超时
-        output_path = os.path.join(output_dir, f"rank_{uuid.uuid4().hex}.jpg")
         img.convert('RGB').save(output_path, format='JPEG', quality=85)
         
         # 转换为绝对路径并替换反斜杠为正斜杠，增强 NapCat 等框架在 Windows 下的路径兼容性
@@ -721,6 +688,7 @@ class TalkativeKing(Star):
             return
 
         # Render Image
+        image_path = None
         try:
             image_path = await self._render_leaderboard_image(group_id, which)
             if image_path and os.path.exists(image_path):
@@ -732,6 +700,12 @@ class TalkativeKing(Star):
             import traceback
             logger.error(traceback.format_exc())
             await event.send(event.plain_result(f"生成图片失败: {e}"))
+        finally:
+            if image_path and os.path.exists(image_path):
+                try:
+                    os.remove(image_path)
+                except OSError as cleanup_error:
+                    logger.warning(f"Failed to remove temporary leaderboard image: {cleanup_error}")
 
     async def _render_leaderboard_image(self, group_id, which="today"):
         """根据 group_id 与 which(today/yesterday) 生成排行榜图片，返回图片路径或 None。
@@ -860,6 +834,7 @@ class TalkativeKing(Star):
 
     async def _send_auto_leaderboard(self, group_id, umo, today_str):
         """向指定群主动推送今日壁画王图片。"""
+        image_path = None
         try:
             # 发送前确保数据已按日期重置
             await self.check_reset()
@@ -874,6 +849,12 @@ class TalkativeKing(Star):
             logger.info(f"已自动向群 {group_id} 发送今日壁画王。")
         except Exception as e:
             logger.error(f"自动向群 {group_id} 发送今日壁画王失败: {e}")
+        finally:
+            if image_path and os.path.exists(image_path):
+                try:
+                    os.remove(image_path)
+                except OSError as cleanup_error:
+                    logger.warning(f"Failed to remove temporary auto leaderboard image: {cleanup_error}")
 
     async def terminate(self):
         # 取消定时自动发送后台任务
