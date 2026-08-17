@@ -118,10 +118,26 @@ class TalkativeKing(Star):
                 continue
 
             try:
-                with config_path.open("r", encoding="utf-8") as f:
-                    loaded = json.load(f)
+                # 使用 utf-8-sig 自动剥离可能存在的 UTF-8 BOM，
+                # 避免配置文件被部分编辑器写入 BOM 后导致 json 解析失败。
+                with config_path.open("r", encoding="utf-8-sig") as f:
+                    raw = f.read()
+                # 去除首尾空白及可能残留的 BOM / 零宽字符，
+                # 避免空文件或截断文件触发 "unexpected end of JSON input" 之类报错。
+                raw = raw.strip().lstrip("\ufeff").rstrip("\x00")
+                if not raw:
+                    logger.warning(f"Runtime config is empty, skipped: {config_path}")
+                    continue
+                loaded = json.loads(raw)
                 if isinstance(loaded, dict):
                     return loaded
+                logger.warning(
+                    f"Runtime config is not a JSON object, skipped: {config_path}"
+                )
+            except json.JSONDecodeError as e:
+                logger.warning(
+                    f"Failed to parse runtime config from {config_path}: {e}"
+                )
             except Exception as e:
                 logger.warning(f"Failed to load runtime config from {config_path}: {e}")
 
