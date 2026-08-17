@@ -19,7 +19,7 @@ from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.api import logger
 
-@register("talkative_king", "User", "统计群组发言并生成排行榜", "1.4.1", "")
+@register("talkative_king", "User", "统计群组发言并生成排行榜", "1.4.2", "")
 class TalkativeKing(Star):
     ALLOWED_DATA_KEYS = {"date", "groups", "yesterday", "umo_map"}
     ZAKO_PHRASES = [
